@@ -4,18 +4,18 @@
  * - If REACT_APP_API_BASE or REACT_APP_BACKEND_URL is set, requests are sent to that base URL.
  * - If unset, we use an in-memory mock store to keep the UI functional.
  *
- * Backend expects routes under /api:
+ * FastAPI backend expects routes under /api:
+ * - /api/health
  * - /api/recipes
  * - /api/favorites
- * Healthcheck: /health (no /api prefix)
  */
 
 const RAW_API_BASE = process.env.REACT_APP_API_BASE || process.env.REACT_APP_BACKEND_URL;
 
 /**
  * Normalize base URL so callers can set either:
- * - http://localhost:3010        (we will append /api)
- * - http://localhost:3010/api    (we will keep /api)
+ * - http://localhost:3011        (we will append /api)
+ * - http://localhost:3011/api    (we will keep /api)
  */
 function normalizeApiBase(base) {
   if (!base) return "";
@@ -252,28 +252,28 @@ export async function healthcheck() {
   /**
    * Best-effort backend availability check.
    *
-   * Default backend path is `/health` at the server root (no `/api` prefix).
-   * Some deployments may expose a different health path; allow overriding via:
-   * - REACT_APP_HEALTHCHECK_PATH (e.g. "/health" or "/api/health")
+   * FastAPI backend exposes health at `/api/health` (default).
+   * You can override with:
+   * - REACT_APP_HEALTHCHECK_PATH (e.g. "/api/health")
    *
-   * Returns: { ok: boolean, service?: string } or throws on network errors.
+   * Returns: { ok: boolean, ... } or throws on network errors.
    */
   if (isMockMode()) return { ok: true, mode: "mock" };
 
-  const root = API_BASE.replace(/\/api$/, "");
-  const configuredPath = (process.env.REACT_APP_HEALTHCHECK_PATH || "/health").trim() || "/health";
+  const configuredPath = (process.env.REACT_APP_HEALTHCHECK_PATH || "/api/health").trim() || "/api/health";
+  const path = configuredPath.startsWith("/") ? configuredPath : `/${configuredPath}`;
 
-  // Try configured path first, then a small fallback list for common setups.
-  const candidates = [
-    configuredPath.startsWith("/") ? configuredPath : `/${configuredPath}`,
-    "/health",
-    "/api/health",
-  ].filter((v, idx, arr) => arr.indexOf(v) === idx);
+  // Primary: use the configured path. Fallback: a couple of common alternates.
+  const candidates = [path, "/api/health", "/health"].filter((v, idx, arr) => arr.indexOf(v) === idx);
 
   let lastErr = null;
 
-  for (const path of candidates) {
-    const url = `${root}${path}`;
+  for (const p of candidates) {
+    // If the configured path is absolute, fetch from the server root (API_BASE already ends in /api).
+    // We do this by stripping /api and appending the candidate.
+    const root = API_BASE.replace(/\/api$/, "");
+    const url = `${root}${p}`;
+
     try {
       const res = await fetch(url, { method: "GET" });
       if (!res.ok) {
@@ -346,7 +346,8 @@ export const recipesApi = {
       await sleep(250);
       return mockDb.updateRecipe(id, payload);
     }
-    return httpRequest(`/recipes/${encodeURIComponent(id)}`, { method: "PUT", body: payload });
+    // FastAPI backend uses PATCH for partial updates.
+    return httpRequest(`/recipes/${encodeURIComponent(id)}`, { method: "PATCH", body: payload });
   },
 
   /** Delete an existing user recipe. */
@@ -367,7 +368,7 @@ export const favoritesApi = {
       await sleep(150);
       return mockDb.getFavorites();
     }
-    // Backend: GET /api/favorites -> Recipe[]
+    // FastAPI: GET /api/favorites -> Recipe[]
     return httpRequest(`/favorites`);
   },
 
@@ -377,8 +378,9 @@ export const favoritesApi = {
       await sleep(100);
       return { isFavorite: mockDb.toggleFavorite(id) };
     }
-    // Backend: POST /api/favorites/:id -> { isFavorite }
-    return httpRequest(`/favorites/${encodeURIComponent(id)}`, { method: "POST" });
+    // FastAPI: POST /api/favorites/toggle { recipe_id } -> { recipe_id, is_favorite }
+    const res = await httpRequest(`/favorites/toggle`, { method: "POST", body: { recipe_id: id } });
+    return { isFavorite: Boolean(res?.is_favorite ?? res?.isFavorite) };
   },
 
   /** Get favorite status for recipe id. */
@@ -387,7 +389,11 @@ export const favoritesApi = {
       await sleep(50);
       return { isFavorite: mockDb.isFavorite(id) };
     }
-    // Backend: GET /api/favorites/:id -> { isFavorite }
-    return httpRequest(`/favorites/${encodeURIComponent(id)}`);
+
+    // FastAPI does not provide a dedicated "is favorite" endpoint in this implementation,
+    // so we derive it from the favorites list.
+    const favorites = await this.list();
+    const isFav = Array.isArray(favorites) ? favorites.some(r => String(r?.id) === String(id)) : false;
+    return { isFavorite: isFav };
   },
 };
