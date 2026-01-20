@@ -15,8 +15,12 @@ export function getApiBaseUrl() {
       process.env.REACT_APP_API_BASE) ||
     "";
 
-  const trimmed = (fromEnv || "").trim();
-  return trimmed.length > 0 ? trimmed.replace(/\/+$/, "") : "http://localhost:3011/api";
+  const trimmed = (fromEnv || "").trim().replace(/\/+$/, "");
+  const base = trimmed.length > 0 ? trimmed : "http://localhost:3011/api";
+
+  // Backwards-compatible safety: many deployments set only the service origin
+  // (e.g. https://host:3011) but our backend routes live under /api.
+  return base.endsWith("/api") ? base : `${base}/api`;
 }
 
 function buildUrl(path) {
