@@ -56,7 +56,8 @@ export async function addFavorite(recipeId) {
   /** Save (favorite) a recipe */
   return apiRequest("/favorites", {
     method: "POST",
-    body: JSON.stringify({ recipeId }),
+    // FastAPI backend expects snake_case per FavoriteCreate(recipe_id: str)
+    body: JSON.stringify({ recipe_id: recipeId }),
   });
 }
 
