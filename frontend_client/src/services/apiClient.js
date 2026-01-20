@@ -251,22 +251,44 @@ export function getConfiguredApiBase() {
 export async function healthcheck() {
   /**
    * Best-effort backend availability check.
-   * Uses /health on the backend root (no /api prefix), so we derive root from API_BASE.
+   *
+   * Default backend path is `/health` at the server root (no `/api` prefix).
+   * Some deployments may expose a different health path; allow overriding via:
+   * - REACT_APP_HEALTHCHECK_PATH (e.g. "/health" or "/api/health")
    *
    * Returns: { ok: boolean, service?: string } or throws on network errors.
    */
   if (isMockMode()) return { ok: true, mode: "mock" };
 
   const root = API_BASE.replace(/\/api$/, "");
-  const url = `${root}/health`;
+  const configuredPath = (process.env.REACT_APP_HEALTHCHECK_PATH || "/health").trim() || "/health";
 
-  const res = await fetch(url, { method: "GET" });
-  if (!res.ok) {
-    const err = new Error(`Healthcheck failed with status ${res.status}`);
-    err.status = res.status;
-    throw err;
+  // Try configured path first, then a small fallback list for common setups.
+  const candidates = [
+    configuredPath.startsWith("/") ? configuredPath : `/${configuredPath}`,
+    "/health",
+    "/api/health",
+  ].filter((v, idx, arr) => arr.indexOf(v) === idx);
+
+  let lastErr = null;
+
+  for (const path of candidates) {
+    const url = `${root}${path}`;
+    try {
+      const res = await fetch(url, { method: "GET" });
+      if (!res.ok) {
+        const err = new Error(`Healthcheck failed with status ${res.status}`);
+        err.status = res.status;
+        lastErr = err;
+        continue;
+      }
+      return res.json().catch(() => ({ ok: true }));
+    } catch (err) {
+      lastErr = err;
+    }
   }
-  return res.json().catch(() => ({ ok: true }));
+
+  throw lastErr || new Error("Healthcheck failed.");
 }
 
 // PUBLIC_INTERFACE
