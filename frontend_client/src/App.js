@@ -7,7 +7,7 @@ import { NotFoundPage } from "./pages/NotFoundPage";
 import { RecipeDetailPage } from "./pages/RecipeDetailPage";
 import { SavedPage } from "./pages/SavedPage";
 import { SearchPage } from "./pages/SearchPage";
-import { isMockMode } from "./services/apiClient";
+import { getConfiguredApiBase, healthcheck, isMockMode } from "./services/apiClient";
 
 function navLinkClass({ isActive }) {
   return `navLink ${isActive ? "navLinkActive" : ""}`;
@@ -16,6 +16,40 @@ function navLinkClass({ isActive }) {
 // PUBLIC_INTERFACE
 function App() {
   /** Main app shell with top navigation + routes. */
+  const [apiStatus, setApiStatus] = React.useState({ state: "idle", message: "" });
+
+  React.useEffect(() => {
+    let mounted = true;
+
+    // Best-effort: don't block the UI, just surface status for easier debugging.
+    (async () => {
+      if (isMockMode()) {
+        if (!mounted) return;
+        setApiStatus({ state: "mock", message: "" });
+        return;
+      }
+
+      try {
+        if (!mounted) return;
+        setApiStatus({ state: "checking", message: "" });
+        const res = await healthcheck();
+        if (!mounted) return;
+        if (res?.ok) setApiStatus({ state: "ok", message: "" });
+        else setApiStatus({ state: "degraded", message: "Backend responded but did not report ok." });
+      } catch (err) {
+        if (!mounted) return;
+        setApiStatus({
+          state: "down",
+          message: err?.message || "Unable to reach backend. Check REACT_APP_API_BASE / REACT_APP_BACKEND_URL.",
+        });
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   return (
     <div className="appShell">
       <header className="topNav">
@@ -47,9 +81,21 @@ function App() {
           <div className="help">
             Mode: <strong>{isMockMode() ? "Mock (no backend configured)" : "API"}</strong>
             {isMockMode() ? (
-              <> — set <code>REACT_APP_API_BASE</code> to enable real API calls.</>
-            ) : null}
+              <> — set <code>REACT_APP_API_BASE</code> (or <code>REACT_APP_BACKEND_URL</code>) to enable real API calls.</>
+            ) : (
+              <>
+                {" "}
+                — base: <code>{getConfiguredApiBase()}</code>
+              </>
+            )}
           </div>
+
+          {!isMockMode() && apiStatus.state === "down" ? (
+            <div className="alert alertError" role="alert" style={{ marginTop: 10 }}>
+              <p className="alertTitle">Backend unavailable</p>
+              <p className="alertBody">{apiStatus.message}</p>
+            </div>
+          ) : null}
         </div>
 
         <Routes>

@@ -1,11 +1,30 @@
 /**
  * API client with optional mock fallback.
  *
- * - If REACT_APP_API_BASE is set, requests are sent to that base URL.
+ * - If REACT_APP_API_BASE or REACT_APP_BACKEND_URL is set, requests are sent to that base URL.
  * - If unset, we use an in-memory mock store to keep the UI functional.
+ *
+ * Backend expects routes under /api:
+ * - /api/recipes
+ * - /api/favorites
+ * Healthcheck: /health (no /api prefix)
  */
 
-const API_BASE = process.env.REACT_APP_API_BASE;
+const RAW_API_BASE = process.env.REACT_APP_API_BASE || process.env.REACT_APP_BACKEND_URL;
+
+/**
+ * Normalize base URL so callers can set either:
+ * - http://localhost:3010        (we will append /api)
+ * - http://localhost:3010/api    (we will keep /api)
+ */
+function normalizeApiBase(base) {
+  if (!base) return "";
+  const trimmed = String(base).trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  return trimmed.endsWith("/api") ? trimmed : `${trimmed}/api`;
+}
+
+const API_BASE = normalizeApiBase(RAW_API_BASE);
 
 /**
  * Small helper to simulate latency in mock mode.
@@ -49,7 +68,8 @@ const seededRecipes = [
     title: "Lemon Garlic Pasta",
     description: "A bright, weeknight pasta with lemon, garlic, and herbs.",
     ingredients: ["Spaghetti", "Garlic", "Lemon", "Olive oil", "Parsley", "Parmesan"],
-    instructions: "Cook pasta. Sauté garlic in olive oil. Toss with lemon zest/juice, herbs, and pasta water. Finish with parmesan.",
+    instructions:
+      "Cook pasta. Sauté garlic in olive oil. Toss with lemon zest/juice, herbs, and pasta water. Finish with parmesan.",
     tags: ["pasta", "quick", "vegetarian"],
     category: "Dinner",
     imageUrl: "",
@@ -119,7 +139,7 @@ const mockDb = {
     const total = items.length;
     const start = (page - 1) * pageSize;
     const paged = items.slice(start, start + pageSize);
-    return { items: paged, total };
+    return { items: paged, total, page, pageSize };
   },
   getFavorites() {
     const favIds = loadFavorites();
@@ -222,6 +242,34 @@ export function isMockMode() {
 }
 
 // PUBLIC_INTERFACE
+export function getConfiguredApiBase() {
+  /** Returns the normalized API base URL (including /api) or empty string in mock mode. */
+  return API_BASE;
+}
+
+// PUBLIC_INTERFACE
+export async function healthcheck() {
+  /**
+   * Best-effort backend availability check.
+   * Uses /health on the backend root (no /api prefix), so we derive root from API_BASE.
+   *
+   * Returns: { ok: boolean, service?: string } or throws on network errors.
+   */
+  if (isMockMode()) return { ok: true, mode: "mock" };
+
+  const root = API_BASE.replace(/\/api$/, "");
+  const url = `${root}/health`;
+
+  const res = await fetch(url, { method: "GET" });
+  if (!res.ok) {
+    const err = new Error(`Healthcheck failed with status ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json().catch(() => ({ ok: true }));
+}
+
+// PUBLIC_INTERFACE
 export const recipesApi = {
   /** List recipes with optional pagination/filtering. */
   async list({ page = 1, pageSize = 9, tag = "", category = "" } = {}) {
@@ -229,8 +277,10 @@ export const recipesApi = {
       await sleep(250);
       return mockDb.listRecipes({ page, pageSize, tag, category });
     }
-    // Expected backend shape: { items: Recipe[], total: number }
-    return httpRequest(`/recipes?page=${page}&pageSize=${pageSize}&tag=${encodeURIComponent(tag)}&category=${encodeURIComponent(category)}`);
+    // Backend supports /api/recipes?search=&q=&page=&pageSize=&tag=&category=
+    return httpRequest(
+      `/recipes?page=${page}&pageSize=${pageSize}&tag=${encodeURIComponent(tag)}&category=${encodeURIComponent(category)}`
+    );
   },
 
   /** Search recipes by text query. */
@@ -240,6 +290,7 @@ export const recipesApi = {
       const items = mockDb.searchRecipes(query);
       return { items, total: items.length };
     }
+    // Compatibility endpoint exists: GET /api/recipes/search?q=
     return httpRequest(`/recipes/search?q=${encodeURIComponent(query || "")}`);
   },
 
@@ -294,6 +345,7 @@ export const favoritesApi = {
       await sleep(150);
       return mockDb.getFavorites();
     }
+    // Backend: GET /api/favorites -> Recipe[]
     return httpRequest(`/favorites`);
   },
 
@@ -303,15 +355,17 @@ export const favoritesApi = {
       await sleep(100);
       return { isFavorite: mockDb.toggleFavorite(id) };
     }
+    // Backend: POST /api/favorites/:id -> { isFavorite }
     return httpRequest(`/favorites/${encodeURIComponent(id)}`, { method: "POST" });
   },
 
-  /** Get favorite status for recipe id (best-effort in real mode). */
+  /** Get favorite status for recipe id. */
   async isFavorite(id) {
     if (isMockMode()) {
       await sleep(50);
       return { isFavorite: mockDb.isFavorite(id) };
     }
+    // Backend: GET /api/favorites/:id -> { isFavorite }
     return httpRequest(`/favorites/${encodeURIComponent(id)}`);
   },
 };
